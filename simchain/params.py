@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 class Params:
     
-    MAX_BLOCK_SERIALIZED_SIZE = 1000000  # bytes = 1MB
-    
-    COINBASE_MATURITY = 2 #coinbase can be used after two more blocks base on recent one
-    
     MAX_FUTURE_BLOCK_TIME = 10*6
     
     PERIOD_FOR_ONE_CONSENSUS = 1 * 5 #we hope 10 secs for one consensus
@@ -15,9 +11,9 @@ class Params:
     
     INITIAL_DIFFICULTY_BITS = 18 
     
-    FIX_BLOCK_SUBSIDY = 500
+    FIX_BLOCK_REWARD = 500
     
-    MAX_TX_NUMBER_FOR_MINER = 30 
+    MAX_TX_NUMBER_FOR_MINER = 5 
     
     INIT_NUMBER_OF_PEERS = 12
     

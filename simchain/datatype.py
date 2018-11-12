@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import os 
-from ecc import sha256d
+from .ecc import sha256d
 
 #A pointer to a transaction unspent output
 class Pointer(tuple):
@@ -44,9 +44,6 @@ class Vin(tuple):
     @property
     def sig_script(self):
         return self[1]+self[2]
-    
-    def to_string(self):
-        return "{0}{1}".format(self[0],self[1])
 
     def __repr__(self):
         return "Vin(to_spend:{0},signature:{1},pubkey:{2})".format(self[0],self[1],self[2])
@@ -69,7 +66,7 @@ class Vout(tuple):
 
     @property
     def pubkey_script(self):
-        script = "OP_DUP OP_CHECKADDR {0} OP_EQ OP_CHECKSIG".format(self[0])
+        script = "OP_DUP OP_ADDR {0} OP_EQ OP_CHECKSIG".format(self[0])
         return script
 
     def __repr__(self):
@@ -127,10 +124,11 @@ class UTXO(tuple):
 #transaction
 class Tx(tuple):
     
-    def __new__(cls,tx_in,tx_out,fee=0,nlocktime=0):
+    def __new__(cls,tx_in,tx_out,fee=0,timestamp=0,nlocktime=0):
         return super(Tx,cls).__new__(cls,(tx_in,
                                           tx_out,
                                           fee,
+                                          timestamp,
                                           nlocktime))
         
     @property
@@ -168,7 +166,7 @@ class Tx(tuple):
         return sha256d(self.to_string())
     
     def to_string(self):
-        return "{0}{1}{2}".format(self[0][0].to_string(),
+        return "{0}{1}{2}".format(self[0],
                                   self[1],
                                   self[3])
 
@@ -176,18 +174,16 @@ class Tx(tuple):
         return "Tx(id:{0})".format(self.id)
 
 
-
+#block
 class Block(tuple): 
     def __new__(cls,version,
                 prev_block_hash,
-                merkle_root_hash,
                 timestamp,
                 bits,
                 nonce,
                 txs):
         return super(Block,cls).__new__(cls,(version,
                                              prev_block_hash,
-                                             merkle_root_hash,
                                              timestamp,
                                              bits,
                                              nonce,
@@ -203,46 +199,49 @@ class Block(tuple):
         return self[1]
     
     @property
-    def merkle_root_hash(self):
+    def timestamp(self):
         return self[2]
     
     @property
-    def timestamp(self):
+    def bits(self):
         return self[3]
     
     @property
-    def bits(self):
+    def nonce(self):
         return self[4]
     
     @property
-    def nonce(self):
-        return self[5]
-    
-    @property
     def txs(self):
-        return self[6]
+        return self[5]
+
+    @property
+    def merkle_root_hash(self):
+        return self.get_merkle_root()
 
     def _replace(self,nonce = 0):
         return Block(self[0],
                      self[1],
                      self[2],
                      self[3],
-                     self[4],
                      nonce,
-                     self[6])
-                     
-                     
+                     self[5])
 
-    def header(self,nonce = None) -> str:
+    def get_merkle_root(self):
+        return get_merkle_root_of_txs(self.txs) if self.txs else None
+    
+    def header(self,nonce = None,merkle_root_hash = None):
+        if merkle_root_hash is None:
+            merkle_root_hash = self.get_merkle_root()
+            
         return "{0}{1}{2}{3}{4}{5}".format(self[0],
                                            self[1],
                                            self[2],
                                            self[3],
-                                           self[4],
-                                           nonce or self[5])
+                                           merkle_root_hash,
+                                           nonce or self[4])
 
     @property
-    def hash(self) -> str:
+    def hash(self):
         return sha256d(self.header())
 
     def __repr__(self):
@@ -250,53 +249,33 @@ class Block(tuple):
 
 
 
-class MerkleTree(tuple):
-    
-    def __new__(cls,val,children=None):
-        return super(MerkleTree,cls).__new__(cls,(val,children))
-    
-    @property
-    def val(self):
-        return self[0]
-    
-    @property
-    def children(self):
-        return self[1]
-
-    def __repr__(self):
-        return 'MerkleTree({0})'.format(self[0])
-
-
 def get_merkle_root_of_txs(txs):
-    return get_merkle_root(*[tx.id for tx in txs])
+    return get_merkle_root([tx.id for tx in txs])
 
 
-def get_merkle_root(*leaves):
-    if len(leaves) % 2 == 1:
-        leaves = leaves + (leaves[-1],)
-
-    def find_root(nodes):
-        if len(nodes) % 2 == 1:
-            nodes = nodes + [nodes[-1]]
+def get_merkle_root(level):
+    
+    while len(level) != 1:
+        odd = None
+        if len(level) % 2 == 1:
+            odd = level.pop()
             
-        newlevel = [MerkleTree(sha256d(i1.val + i2.val), children=[i1, i2])
-            for [i1, i2] in pair(nodes)]
+        level = [sha256d(i1+i2) for i1,i2 in pair_node(level)]
 
-        return find_root(newlevel) if len(newlevel) > 1 else newlevel[0]
-
-    return find_root([MerkleTree(sha256d(l)) for l in leaves])
-
-def pair(l):
+        if odd:
+            level.append(odd)
+    return level[0]
+    
+def pair_node(l):
     return (l[i:i + 2] for i in range(0, len(l), 2))
 
 
-
 if __name__ == "__main__":
-    a = Pointer(1,2)
+    p = Pointer(1,2)
     vout = Vout(1,2)
     utxo = UTXO((1,2),[2,3],True,1)
-    vin = Vin(a,b'1',b'12')
+    vin = Vin(p,b'1',b'12')
     tx = Tx([vin],[vout])
-    block = Block(1,2,3,4,5,True,6)
+    block = Block(1,2,3,4,5,[tx])
     
     

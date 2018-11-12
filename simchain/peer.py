@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 
 import random
-from  .ecc import VerifyingKey,build_message
+from .ecc import VerifyingKey,build_message,convert_pubkey_to_addr
 from .datatype import Pointer,Vin,Vout,UTXO,Tx,Block,get_merkle_root_of_txs
 from .params import Params
 from .consensus import mine,caculate_target
 from .logger import logger
 from .wallet import Wallet
-from .script import LittleMachine
+from .vm import LittleMachine
+from .merkletree import MerkleTree
 
 class Peer(object):
     
@@ -26,7 +27,9 @@ class Peer(object):
         self.fee = Params.FIX_FEE_PER_TX
         self.tx_choice_method = 'whole'
         self.current_tx = None
+        self.allow_utxo_from_pool = True
         self.machine = LittleMachine()
+        self._is_wallet_generated = False
         self.generate_wallet()
         
         self._is_block_candidate_created = False
@@ -51,16 +54,18 @@ class Peer(object):
     """
     
     def generate_wallet(self):
-        self.wallet = Wallet()
+        if not self._is_wallet_generated:
+            self.wallet = Wallet()
+            self._is_wallet_generated = True
 
 
     @property
     def sk(self):
-        return self.wallet.keys[-1].sk.to_string() if self.wallet.keys else None
+        return self.wallet.keys[-1].sk.to_bytes() if self.wallet.keys else None
 
     @property
     def pk(self):
-        return self.wallet.keys[-1].pk.to_string() if self.wallet.keys else None
+        return self.wallet.keys[-1].pk.to_bytes() if self.wallet.keys else None
 
 
     @property
@@ -100,16 +105,12 @@ class Peer(object):
     def get_fee(self):
         return self.fee
 
-    def calculate_fees(self,txs):
-        fee = 0
-        if txs:
-            for tx in txs:
-                fee += tx.fee
-            return fee
-        return 0
+    def calculate_fees(self,txs=[]):
+        return sum(tx.fee for tx in txs)
+
     
-    def get_block_subsidy(self):
-        return Params.FIX_BLOCK_SUBSIDY
+    def get_block_reward(self):
+        return Params.FIX_BLOCK_REWARD
 
 
     """
@@ -164,7 +165,7 @@ class Peer(object):
     
     def recieve_transaction(self,tx):
         if tx and (tx not in self.mem_pool):
-            if self.verify_transaction(self,tx,self.mem_pool): 
+            if self.verify_transaction(tx,self.mem_pool): 
                 add_tx_to_mem_pool(self,tx)
                 return True
         
@@ -209,14 +210,12 @@ class Peer(object):
             return False
         return try_to_add_block(self,block)
     
-
-
     
     """
     verify a transaction
     """
     
-    def verify_transaction(self,tx,pool={}):
+    def verify_transaction(self,tx,pool = {}):
         if tx in self.txs:
             return True
         return verify_tx(self,tx,pool)
@@ -232,16 +231,35 @@ class Peer(object):
         if self.orphan_pool:
             check_orphan_tx_from_pool(self)
             
-        pool = get_unknown_txs_from_block(self.mem_pool,block.txs)
         if block == self.candidate_block:
             return True
         
-        if verify_winner_block(self,block,pool):
-            return True
-        else:
+        if not verify_winner_block(self,block):
             return False
+
+        return True
     
-    
+    def response_path(self,tx):
+        if tx.id in self.mem_pool:
+            return "unconfirmed"
+
+        tot_height = self.get_height()
+        for i in range(tot_height):
+            txs = self.blockchain[-i-1].txs
+            if tx in txs:
+                break
+            else:
+                return False
+
+        height = tot_height - i
+        idx = txs.index(tx)
+        idxs = [tx.id for tx in txs]
+        merkle = MerkleTree(idxs)
+        path = merkle.get_path(idx)
+        return height,path
+            
+
+        
     """
     peer links to p2p network
     """
@@ -289,21 +307,18 @@ class Peer(object):
     def create_candidate_block(self):
         self.choose_tx_candidates()
         txs = self.candidate_block_txs
-        value = self.get_block_subsidy() + self.calculate_fees(txs)
+        value = self.get_block_reward() + self.calculate_fees(txs)
         coinbase = self.create_coinbase(value)
         txs = [coinbase]+txs
         
-        prev_block_hash = self.blockchain[-1].hash     
-        merkle_root_hash = get_merkle_root_of_txs(txs).val if txs else None
+        prev_block_hash = self.blockchain[-1].hash
         bits = Params.INITIAL_DIFFICULTY_BITS 
-        
         self.candidate_block = Block(version=0, 
                                      prev_block_hash=prev_block_hash,
-                                     merkle_root_hash = merkle_root_hash,
-                                     timestamp= self.network.time[-1],
-                                     bits=bits, 
-                                     nonce=0,
-                                     txs= txs or [])
+                                     timestamp = self.network.time[-1],
+                                     bits = bits, 
+                                     nonce = 0,
+                                     txs = txs or [])
         
         self._is_block_candidate_created = True
         
@@ -399,7 +414,7 @@ def update_pool(peer,pool):
 #create transactions
 def create_normal_tx(peer,to_addr,value) :
     utxos,balance = peer.get_utxo(),peer.get_balance()
-    fee,addr = peer.fee,peer.wallet.addrs[-1]
+    fee,wallet = peer.fee,peer.wallet
     
     tx_in,tx_out = [],[]
     value = value + fee
@@ -415,20 +430,21 @@ def create_normal_tx(peer,to_addr,value) :
             break
             
     if need_to_spend > value:
-        tx_out +=[Vout(to_addr,value-fee),Vout(addr,need_to_spend-value)]
+        my_addr = wallet.addrs[-1]
+        tx_out +=[Vout(to_addr,value-fee),Vout(my_addr,need_to_spend-value)]
     else:
         tx_out += [Vout(to_addr,value-fee)]
             
             
     for utxo in utxos[:n]:
         addr = utxo.vout.to_addr
-        idx = peer.wallet.addrs.index(addr)
-        sk,pk = peer.wallet.keys[idx].sk,peer.wallet.keys[idx].pk
+        idx = wallet.addrs.index(addr)
+        sk,pk = wallet.keys[idx].sk,wallet.keys[idx].pk
         
-        string = str(utxo.pointer) + str(pk.to_string())
+        string = str(utxo.pointer) + str(pk.to_bytes()) + str(tx_out)
         message = build_message(string)
         signature = sk.sign(message)
-        tx_in.append(Vin(utxo.pointer,signature,pk.to_string()))
+        tx_in.append(Vin(utxo.pointer,signature,pk.to_bytes()))
         
     return tx_in,tx_out,fee
 
@@ -478,32 +494,13 @@ def broadcast_tx(peers,current_tx):
     return number_of_verification
 
 
-def check_orphan_tx_from_pool(peer)->bool:
-    available_value = 0
+def check_orphan_tx_from_pool(peer):
     copy_pool = peer.orphan_pool.copy()
     for tx in copy_pool.values():
-        if tx.id in peer.mem_pool:
-            del peer.orphan_pool[tx.id]
-            add_tx_to_mem_pool(peer,tx)
-            continue
-
-        for vin in tx.tx_in:
-            utxo = peer.utxo_set.get(vin.to_spend)
-            
-            if not utxo:
-                return False
-
-            if not verify_signature_for_vin(vin,utxo,peer.key_base_len):
-                return False
-            
-            available_value += utxo.vout.value
-            
-        if available_value < sum(vout.value for vout in tx.tx_out):
+        if not verify_tx(tx,peer.mem_pool):
             return False
-        
         add_tx_to_mem_pool(peer,tx)
         del peer.orphan_pool[tx.id]
-        
     return True
             
 # =============================================================================
@@ -525,15 +522,15 @@ def broadcast_winner_block(peers,block):
 # =============================================================================
 
 def find_utxos_from_txs(txs):
-    return [UTXO(vout,Pointer(tx.id,i),tx.is_coinbase,vout.pubkey_script)
+    return [UTXO(vout,Pointer(tx.id,i),tx.is_coinbase)
             for tx in txs for i,vout in enumerate(tx.tx_out)]
     
 def find_utxos_from_block(txs):
-    return [UTXO(vout,Pointer(tx.id,i),tx.is_coinbase,vout.pubkey_script,True,True)
+    return [UTXO(vout,Pointer(tx.id,i),tx.is_coinbase,True,True)
             for tx in txs for i,vout in enumerate(tx.tx_out)]
     
 def find_utxos_from_tx(tx):
-    return [UTXO(vout,Pointer(tx.id,i),tx.is_coinbase,vout.pubkey_script)
+    return [UTXO(vout,Pointer(tx.id,i),tx.is_coinbase)
             for i,vout in enumerate(tx.tx_out)]
 
 def find_vout_pointer_from_txs(txs):
@@ -542,19 +539,31 @@ def find_vout_pointer_from_txs(txs):
 def find_vin_pointer_from_txs(txs):
     return [vin.to_spend for tx in txs for vin in tx.tx_in]
             
+##def confirm_utxos_from_txs(utxo_set,txs,allow_utxo_from_pool):
+##    if allow_utxo_from_pool:
+##        utxos = find_utxos_from_txs(txs[1:])
+##        add_utxos_from_tx_to_set(utxo_set,txs[0])
+##        pointers = find_vout_pointer_from_txs(txs)
+##        confirm_utxo_by_pointers(utxo_set,pointers)
+##        return pointers,utxos
+##    else:
+##        utxos = find_utxos_from_block(txs)
+##        pointers = find_vout_pointer_from_txs(txs)
+##        add_utxos_to_set(utxo_set,utxos)
+##        return pointers,utxos
+
 def confirm_utxos_from_txs(utxo_set,txs,allow_utxo_from_pool):
     if allow_utxo_from_pool:
         utxos = find_utxos_from_txs(txs[1:])
-        add_utxos_from_tx_to_set(utxo_set,txs[0])
+        add_utxo_from_block_to_set(utxo_set,txs)
         pointers = find_vout_pointer_from_txs(txs)
-        confirm_utxo_by_pointers(utxo_set,pointers)
         return pointers,utxos
     else:
         utxos = find_utxos_from_block(txs)
         pointers = find_vout_pointer_from_txs(txs)
         add_utxos_to_set(utxo_set,utxos)
-        return pointers,utxos
-        
+        return pointers,[]
+    
 def remove_spent_utxo_from_txs(utxo_set,txs):
     pointers = find_vin_pointer_from_txs(txs)
     utxos = delete_utxo_by_pointers(utxo_set,pointers)
@@ -568,12 +577,7 @@ def delete_utxo_by_pointers(utxo_set,pointers):
             del utxo_set[pointer]
     return utxos_from_vins
 
-def confirm_utxo_by_pointers(utxo_set,pointers):
-    for pointer in pointers:
-        if pointer in utxo_set:
-            utxo = utxo_set[pointer]
-            utxo = utxo._replace(confirmed = True)
-            utxo_set[pointer] = utxo
+
             
 def sign_utxo_from_tx(utxo_set,tx):
     for vin in tx.tx_in:
@@ -593,13 +597,16 @@ def add_utxo_from_txs_to_set(utxo_set,txs):
     utxos = find_utxos_from_txs(txs)
     add_utxos_to_set(utxo_set,utxos)
 
+def add_utxo_from_block_to_set(utxo_set,txs):
+    utxos = find_utxos_from_block(txs)
+    add_utxos_to_set(utxo_set,utxos)
+    
 def add_utxos_to_set(utxo_set,utxos):
     if isinstance(utxos,dict):
         utxos = utxos.values()
         
     for utxo in utxos:
-        if utxo.pointer not in utxo_set:
-            utxo_set[utxo.pointer] = utxo
+        utxo_set[utxo.pointer] = utxo
 
 def remove_utxos_from_set(utxo_set,pointers):
     for pointer in pointers:
@@ -610,11 +617,11 @@ def remove_utxos_from_set(utxo_set,pointers):
 #verify transaction
 # =============================================================================
         
-def verify_tx(peer,tx,pool,is_coinbase = False):
+def verify_tx(peer,tx,pool = {}):
     
-    if not verify_basics(tx,is_coinbase = is_coinbase):
+    if not verify_tx_basics(tx):
         return False
-    
+
     if double_payment(pool,tx):
         logger.info('{0} double payment'.format(tx))
         return False
@@ -631,7 +638,7 @@ def verify_tx(peer,tx,pool,is_coinbase = False):
             peer.orphan_pool[tx.id] = tx
             return False
 
-        if not verify_signature(peer,vin,utxo):
+        if not verify_signature(peer,vin,utxo,tx.tx_out):
             logger.info('singature does not math for {0}'.format(tx))
             return False
     
@@ -645,11 +652,11 @@ def verify_tx(peer,tx,pool,is_coinbase = False):
 
     return True
 
-def verify_signature(peer,vin,utxo):
+def verify_signature(peer,vin,utxo,tx_out):
     script = check_script_for_vin(vin,utxo,peer.key_base_len)
     if not script:
         return False
-    string = str(vin.to_spend) + str(vin.pubkey)
+    string = str(vin.to_spend) + str(vin.pubkey) + str(tx_out)
     message = build_message(string)
     peer.machine.set_script(script,message)
     return peer.machine.run()
@@ -668,26 +675,32 @@ def check_script_for_vin(vin,utxo,baselen):
 
     return sig_scrip+pubkey_script
 
+
+def verify_signature_for_vin(vin,utxo,tx_out):
+    pk_str,signature = vin.pubkey,vin.signature
+    to_addr = utxo.vout.to_addr
+    string = str(vin.to_spend) + str(pk_str) + str(tx_out)
+    message = build_message(string)
+    pubkey_as_addr = convert_pubkey_to_addr(pk_str)
+    verifying_key = VerifyingKey.from_bytes(pk_str)
+
+    if pubkey_as_addr != to_addr:
+        return Fasle
     
-    
-##def verify_signature_for_vin(vin,utxo,baselen):
-##    pk,signature = vin.pubkey,vin.signature
-##    if len(pk) != baselen*2 or len(signature) != baselen*2:
-##        logger.info('pubkey or signature length does not match for {0}'.format(vin))
-##        return False
-##    
-##    to_addr = utxo.vout.to_addr
-##    string = str(vin.to_spend) + str(pk)
-##    return verify_signature_by_pubkey(pk,to_addr,signature,string)
+    if not verifying_key.verify(signature, message):
+        return Fasle
+
+    return True
 
     
-def verify_basics(tx, is_coinbase=False):
-    if (not tx.tx_out) or (not tx.tx_in and not is_coinbase):
+def verify_tx_basics(tx):
+    if not isinstance(tx,Tx):
+        logger.info('{0} is not Tx type'.format(tx))
+        return False
+    
+    if (not tx.tx_out) or (not tx.tx_in):
         logger.info('{0} Missing tx_out or tx_in'.format(tx))
-        return 
-    if len(str(tx)) > Params.MAX_BLOCK_SERIALIZED_SIZE:
-        logger.info('{0} transaction is too large'.format(tx))
-        return 
+        return False
     return True
 
 def double_payment(pool,tx):
@@ -697,12 +710,12 @@ def double_payment(pool,tx):
     b = {vin.to_spend for tx in pool.values() for vin in tx.tx_in}
     return a.intersection(b)
 
-def verify_coinbase(tx,subsidy):
+def verify_coinbase(tx,reward):
     if not isinstance(tx,Tx):
         return False
     if not tx.is_coinbase:
         return False
-    if (not (len(tx.tx_out) ==1))  or (tx.tx_out[0].value != subsidy):
+    if (not (len(tx.tx_out) ==1))  or (tx.tx_out[0].value != reward):
         return False
     return True
 
@@ -710,36 +723,47 @@ def verify_coinbase(tx,subsidy):
 #verify block
 # =============================================================================
     
-def verify_winner_block(peer,block,pool):
-    
-    if block in (peer.blockchain+peer.orphan_block):
-        logger.info('{0} has been seen'.format(block))
-        return  False
-    
-    if not block.txs:
-        logger.info('no transactions in this block{0}'.format(block))
+def verify_winner_block(peer,block):
+
+    if not isinstance(block,Block):
         return False
-        
+    
     if int(block.hash, 16) > caculate_target(block.bits):
         logger.info('{0} wrong answer'.format(block))
         return False
     
-    subsidy = peer.get_block_subsidy()+peer.calculate_fees(block.txs[1:])
-    if not verify_coinbase(block.txs[0],subsidy):
+    txs = block.txs
+    if not isinstance(txs,list) and \
+       not isinstance(txs,tuple):
+        logger.info('incorrect txs type in {0}'.format(block))
+        return False
+    
+    if len(txs) < 2:
+        logger.info('no enough txs for txs {0}'.format(block))
+        return False
+
+    block_txs = txs[1:]
+    rewards = peer.get_block_reward()+peer.calculate_fees(block_txs)
+    if not verify_coinbase(block.txs[0],rewards):
         logger.info('{0} coinbase incorrect'.format(block))
         return False
+
     
-    if get_merkle_root_of_txs(block.txs).val != block.merkle_root_hash:
-        logger.info('Merkle hash invalid {0}'.format(block))
+    if double_payment_in_block_txs(block_txs):
+        logger.info('double payment in {0}'.format(block))
         return False
-    
-    for tx in block.txs[1:]:
-        if not peer.verify_transaction(tx,pool):
+
+    for tx in block_txs:
+        if not verify_tx(peer,tx):
             return False
-    
     return True
 
-
+def double_payment_in_block_txs(txs):
+    a = {vin.to_spend for tx in txs for vin in tx.tx_in}
+    b = [vin.to_spend for tx in txs for vin in tx.tx_in]
+    return len(a) != len(b)
+    
+    
 # =============================================================================
 #try to recieve a block
 # =============================================================================
@@ -758,11 +782,6 @@ def try_to_add_block(peer,block):
         peer.orphan_block.append(block)
         return False
     
-    if peer.get_height() == 1:
-        peer.blockchain.append(block)
-        recieve_new_prev_hash_block(peer,block.txs)
-        return True
-    
     if height == peer.get_height():
         peer.blockchain.append(block)
         recieve_new_prev_hash_block(peer,block.txs)
@@ -770,23 +789,22 @@ def try_to_add_block(peer,block):
     
     elif height == peer.get_height()-1:
         b1,b2 = peer.blockchain[-1],block
-        a,b = (b1.nonce,b1.timestamp),(b2.nonce,b2.timestamp)
-        flag = compare_block_by_nonce_and_time(a,b)
-        if flag == 1:
+        a,b = int(b1.hash,16),int(b2.hash,16)
+        if a < b:
             return False
-        elif flag == 2:
-            peer.blookchian.pop
+        else:
+            peer.blookchian.pop()
             peer.blockchain.append(block)
             recieve_exist_prev_hash_block(peer,block.txs)
-        elif flag == -1:
-            roll_back(peer)
+    else:
+        return False
     
 def check_orphan_block(peer):
     pass
 
 def recieve_new_prev_hash_block(peer,txs):
     utxo_set,pool = peer.utxo_set,peer.mem_pool
-    allow_utxo_from_pool = peer.network.allow_utxo_from_pool
+    allow_utxo_from_pool = peer.allow_utxo_from_pool
     peer._utxos_from_vins = remove_spent_utxo_from_txs(utxo_set,txs)
     peer._pointers_from_vouts,peer._utxos_from_vouts = confirm_utxos_from_txs(
             utxo_set,txs,allow_utxo_from_pool
@@ -808,7 +826,7 @@ def roll_back(peer):
     peer._utxos_from_vouts = []
     peer._txs_removed = {}
     
-def compare_block_by_nonce_and_time(a,b):
+def compare_block_by_hash(a,b):
     pass
         
 # =============================================================================
@@ -842,7 +860,7 @@ def add_txs_to_pool(pool,txs):
            
 def add_tx_to_mem_pool(peer,tx):
     peer.mem_pool[tx.id] = tx
-    if peer.network.allow_utxo_from_pool:
+    if peer.allow_utxo_from_pool:
         add_utxos_from_tx_to_set(peer.utxo_set,tx)
 
 def calculate_next_block_bits(local_time,prev_height,prev_bits):
@@ -850,7 +868,7 @@ def calculate_next_block_bits(local_time,prev_height,prev_bits):
     if flag != 0:
         return prev_bits
     
-    count = int(round((prev_height + 1)/Params.TOTAL_BLOCKS)*Params.TOTAL_BLOCKS)
+    count = ((prev_height + 1)//Params.TOTAL_BLOCKS)*Params.TOTAL_BLOCKS
     actual_time_taken = local_time[:prev_height] - local_time[:count]
     
     if actual_time_taken < Params.PERIOD_FOR_TOTAL_BLOCKS:

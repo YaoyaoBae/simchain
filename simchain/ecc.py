@@ -1,5 +1,4 @@
 
-
 import sys
 import operator
 import math
@@ -104,6 +103,8 @@ class sha_256:
     def hexdigest(self):
         return binascii.hexlify(self.digest()).decode()
     
+
+    
 def sha256d(string):
     if not isinstance(string, bytes):
         string = string.encode()
@@ -127,6 +128,7 @@ def inv_mod(b, p):
     else:
         return ud + p
 
+
 def leftmost_bit(x):
     assert x > 0
     result = 1
@@ -135,31 +137,30 @@ def leftmost_bit(x):
     return result // 2
 
 class CurveFp(object):
-    """Elliptic Curve over the field of integers modulo a prime."""
+    
     def __init__(self, p, a, b):
-        """The curve of points satisfying y^2 = x^3 + a*x + b (mod p)."""
+        """ y^2 = x^3 + a*x + b (mod p)."""
         self.p = p
         self.a = a
         self.b = b
         
 
     def contains_point(self, x, y):
-        """Is the point (x,y) on this curve?"""
         return (y * y - (x * x * x + self.a * x + self.b)) % self.p == 0
 
 
-    def show_points(self):
+    def show_all_points(self):
         return [(x,y) for x in range(self.p) for y in range(self.p) if
                 (y * y - (x * x * x + self.a * x + self.b)) % self.p == 0]
 
     def __repr__(self):
         return "Curve(p={0:d}, a={1:d}, b={2:d})".format(self.p, self.a, self.b)
 
+
 class Point(object):
-    """A point on an elliptic curve. Altering x and y is forbidding,
-     but they can be read by the x() and y() methods."""
+    
     def __init__(self, curve, x, y, order=None):
-        """curve, x, y, order; order (optional) is the order of this point."""
+        
         self.curve = curve
         self.x = x
         self.y = y
@@ -171,7 +172,7 @@ class Point(object):
             assert self * order == INFINITY
 
     def __eq__(self, other):
-        """Return True if the points are identical, False otherwise."""
+        """Is this point equals to another"""
         if self.curve == other.curve \
            and self.x == other.x \
            and self.y == other.y:
@@ -211,14 +212,12 @@ class Point(object):
             return INFINITY
         if self == INFINITY:
             return INFINITY
-        assert e > 0
 
-        # From X9.62 D.3.2:
         e3 = 3 * e
         negative_self = Point(self.curve, self.x, -self.y, self.order)
         i = leftmost_bit(e3) // 2
         result = self
-        # print_("Multiplying %s by %d (e3 = %d):" % (self, other, e3))
+        
         while i > 1:
             result = result.double()
             if (e3 & i) != 0 and (e & i) == 0:
@@ -238,7 +237,7 @@ class Point(object):
         return "({0},{1})".format(self.x, self.y)
 
     def double(self):
-        """Return a new point that is twice the old."""
+        """the double point."""
         if self == INFINITY:
             return INFINITY
         
@@ -258,42 +257,66 @@ class Point(object):
 
 INFINITY = Point(None, None, None)
 
+def show_points(p,a,b):
+    return [(x, y) for x in range(p) for y in range(p)
+            if (y*y-(x*x*x+a*x+b))%p ==0]
 
+def double(x,y,p,a,b):
+    l = ((3 * x * x + a) * inv_mod(2 * y,p)) % p
+    x3 = (l * l -2 * x) % p
+    y3 = (l *(x - x3) - y) % p
+    return x3,y3
+
+def add(x1,y1,x2,y2,p,a,b):
+
+    if x1 == x2 and y1 == y2:
+        return double(x1,y1,p,a,b)
+
+    l = ((y2 - y1) * inv_mod(x2 - x1,p)) % p
+    x3 = (l * l - x1 - x2) % p
+    y3 = (l * (x1 - x3) - y1) % p
+    return x3,y3
+
+
+def get_bits(n):
+    bits = []
+    while n != 0:
+        bits.append(n & 1)
+        n >>= 1
+    return bits
 
 
 def orderlen(order):
     return (1+len("%x" % order))//2
 
-def string_to_number(string):
+def bytes_to_number(string):
     return int(binascii.hexlify(string), 16)
 
 
-def number_to_string(num,l):
+def number_to_bytes(num,l):
     fmt_str = "%0" + str(2 * l) + "x"
     string = binascii.unhexlify((fmt_str % num).encode())
     return string
 
 
 def sigencode_strings(r, s, l):
-    r_str = number_to_string(r,l)
-    s_str = number_to_string(s,l)
+    r_str = number_to_bytes(r,l)
+    s_str = number_to_bytes(s,l)
     return (r_str, s_str)
 
 
 
 def sigencode_string(r, s, l):
-    # for any given curve, the size of the signature numbers is
-    # fixed, so just use simple concatenation
     r_str, s_str = sigencode_strings(r, s, l)
     return r_str + s_str
 
 
-def string_to_number_fixedlen(string):
+def bytes_to_number_fixedlen(string):
     return int(binascii.hexlify(string), 16)
 
 def sigdecode_string(signature, l):
-    r = string_to_number_fixedlen(signature[:l])
-    s = string_to_number_fixedlen(signature[l:])
+    r = bytes_to_number_fixedlen(signature[:l])
+    s = bytes_to_number_fixedlen(signature[l:])
     return r, s
 
 
@@ -341,19 +364,15 @@ def lsb_of_ones(numbits):
     return (1 << numbits) - 1
 
 def randrange_from_seed__trytryagain(seed, order):
-    assert order > 1
     bits, bytes, extrabits = bits_and_bytes(order)
     generate = PRNG(seed)
     while True:
         extrabyte = b("")
         if extrabits:
             extrabyte = int2byte(ord(generate(1)) & lsb_of_ones(extrabits))
-        guess = string_to_number(extrabyte + generate(bytes)) + 1
+        guess = bytes_to_number(extrabyte + generate(bytes)) + 1
         if 1 <= guess < order:
             return guess
-
-
-
 
 class Curve:
     def __init__(self, name, curve, generator):
@@ -385,6 +404,13 @@ class SigningKey(object):
         self.order = curve.order
         self.baselen = curve.baselen
         self.generator = curve.generator
+        
+
+
+    @classmethod
+    def from_bytes(cls,string,curve = secp256k1):
+        number = bytes_to_number(string) % curve.order
+        return cls.from_number(number,curve = secp256k1)
     
     @classmethod
     def from_number(cls,number,curve = secp256k1):
@@ -396,8 +422,8 @@ class SigningKey(object):
         return self
 
 
-    def to_string(self):
-        s = number_to_string(self.__number,self.baselen)
+    def to_bytes(self):
+        s = number_to_bytes(self.__number,self.baselen)
         return s
 
     def get_verifying_key(self):
@@ -405,7 +431,7 @@ class SigningKey(object):
     
     def sign(self,message,sigencode = sigencode_string):
         k,n,G = self.__number,self.order,self.generator
-        h = string_to_number(message)
+        h = bytes_to_number(message)
         r, s = 0, 0
         while r == 0 or s == 0:
             rk = SystemRandom().randrange(1, n)
@@ -424,12 +450,12 @@ class VerifyingKey(object):
         self.generator = curve.generator
 
     @classmethod
-    def from_string(cls,string,curve = secp256k1):
+    def from_bytes(cls,string,curve = secp256k1):
         l = curve.baselen
         xs = string[:l]
         ys = string[l:]
-        x = string_to_number(xs)
-        y = string_to_number(ys)
+        x = bytes_to_number(xs)
+        y = bytes_to_number(ys)
                              
         if not curve.curvefp.contains_point(x,y):
             return
@@ -443,21 +469,27 @@ class VerifyingKey(object):
         return self
 
 
-    def to_string(self):
+    def to_bytes(self):
         order = self.order
-        x_str = number_to_string(self.point.x,self.baselen)
-        y_str = number_to_string(self.point.y,self.baselen)
+        x_str = number_to_bytes(self.point.x,self.baselen)
+        y_str = number_to_bytes(self.point.y,self.baselen)
         return x_str + y_str
         
 
     def verify(self,sig,message,sigdecode = sigdecode_string):
         r,s = sigdecode(sig,self.baselen)
         K,n,G = self.point,self.order,self.generator
-        h = string_to_number(message)
+        h = bytes_to_number(message)
         w = inv_mod(s,n)
         u1, u2 = (h * w) % n,(r * w) % n
         p = u1 * G + u2 * K
         return r == p.x % n
+    
+
+    @staticmethod
+    def convert_to_addr(p_str = None):
+        p_str = p_str 
+        return convert_pubkey_to_addr(p_str)
     
 
 def verify_signature_by_pubkey(pk_str,to_addr,signature,string):
@@ -487,7 +519,7 @@ def convert_pubkey_to_addr(pubkey_str):
 def sign(message,G,k):
     n = G.order
     mess_hash = sha256(message).digest()
-    h = string_to_number(mess_hash)
+    h = bytes_to_number(mess_hash)
     r, s, = 0, 0
     while r == 0 or s == 0:
         rk = SystemRandom().randrange(1, n)
@@ -499,7 +531,7 @@ def sign(message,G,k):
 def sign_same_rk(message,G,k,rk):
     n = G.order
     mess_hash = sha256(message).digest()
-    h = string_to_number(mess_hash)
+    h = bytes_to_number(mess_hash)
     r, s, = 0, 0
     while r == 0 or s == 0:
         rG = rk*G
@@ -511,7 +543,7 @@ def verify(sig,G,K,message):
     r,s = sig
     n = G.order
     mess_hash = sha256(message).digest()
-    h = string_to_number(mess_hash)
+    h = bytes_to_number(mess_hash)
     w = inv_mod(s,n)
     u1, u2 = (h * w) % n,(r * w) % n
     p = u1 * G + u2 * K
@@ -597,9 +629,9 @@ def crack_by_signature_form_same_rk(G,K,message1, sig1, message2, sig2):
     n = G.order
     assert r1 == r2 
     mess1_hash = sha256(message1).digest()
-    h1 = string_to_number(mess1_hash)
+    h1 = bytes_to_number(mess1_hash)
     mess2_hash = sha256(message2).digest()
-    h2 = string_to_number(mess2_hash)
+    h2 = bytes_to_number(mess2_hash)
 
     rk_candidates = [
         (h1 - h2) * inv_mod((s1 - s2) % n, n) % n,

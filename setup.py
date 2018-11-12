@@ -12,5 +12,5 @@ setup(name='simchain',
       author_email='yaoyao.bae@foxmail.com',
       url = 'https://github.com/YaoyaoBae/simchain',
       license = "Hubei Univeristy of Technology license",
-      packages=['simchain'],
+      packages=['simchain','simchain.lbc'],
       )

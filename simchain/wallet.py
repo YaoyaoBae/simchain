@@ -36,7 +36,7 @@ class Wallet(object):
         if self.keys_generation_method == 'ecc':
             sk,pk = generate_keys_by_ecdsa()
             keys = Keys(sk,pk)
-            addr = convert_pubkey_to_addr(pk.to_string())
+            addr = convert_pubkey_to_addr(pk.to_bytes())
             self.keys.append(keys)
             self.addrs.append(addr)
 

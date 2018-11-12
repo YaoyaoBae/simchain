@@ -5,6 +5,8 @@ import random
 from .datatype import Vin,Vout,Tx,Block,get_merkle_root_of_txs
 from .logger import logger
 from .peer import Peer,find_utxos_from_block,add_utxos_to_set
+
+from .consensus import consensus_with_fasttest_minner
 from .params import Params
 from math import ceil
 from itertools import accumulate
@@ -16,7 +18,7 @@ from itertools import accumulate
 class Network(object):
 
     def __init__(self,nop = None,von = None):
-        self.allow_utxo_from_pool = True
+        
         self.peers = []
         self.off_peers = []
         self.consensus_peers = []
@@ -29,8 +31,7 @@ class Network(object):
         
         self._is_consensus_peers_chosen = False
         self._not = 0
-        
-    
+
     
     def init_peers(self,number):
         for _ in range(number):
@@ -45,6 +46,7 @@ class Network(object):
         peer.update_blockchain(self.peers[0])
         peer.update_mem_pool(self.peers[0])
         peer.update_utxo_set(self.peers[0])
+        logger.info('A new peer joined in --> {0}(pid={1})'.format(peer,peer.pid))
         
     def create_genesis_block(self,number,value):
         self.init_peers(number = number)
@@ -54,14 +56,13 @@ class Network(object):
         
         tx_out = [Vout(value = value,to_addr = peer.wallet.addrs[-1])
                   for peer in self.peers]
-
+        
+        
         txs = [Tx(tx_in = tx_in,tx_out = tx_out,nlocktime = 0)]
-        merkle_root_hash = get_merkle_root_of_txs(txs).val
         genesis_block = Block(version=0,
                               prev_block_hash=None,
-                              merkle_root_hash = merkle_root_hash,
-                              timestamp= int(time.time()),
-                              bits = Params.INITIAL_DIFFICULTY_BITS,
+                              timestamp = 841124,
+                              bits = 0,
                               nonce = 0,
                               txs = txs)
         
@@ -150,20 +151,13 @@ def create_peer(net,peer):
 
 #functions
 # =============================================================================
-def consensus_with_fasttest_minner(peers):
-    l,start = [],time.time()
-    for peer in peers:
-        l.append(peer.consensus())
-    return l.index(min(l)),min(l),time.time()-start
+
 
 
 #Iterables 
 # =============================================================================
     
-def tx_finder(chain):
-    return ((tx,block,height)
-            for height,block,in enumerate(chain)
-            for tx in block.txs)
+
 
 def addr_finder(tx):
     return (out.vout.to_addr for out in tx.tx_out)
@@ -183,14 +177,22 @@ def generate_random_coords():
 
     
 if __name__ == "__main__":
+    pass
+
+##    net = Network(nop = 2,von = 10000)
+##    
+##    zhangsan,lisi = net.peers[0],net.peers[1]
+##    zhangsan.create_transaction(lisi.wallet.addrs[0],100)
+##    zhangsan.broadcast_transaction()
+##    lisi.create_transaction(zhangsan.wallet.addrs[0],100)
+##    lisi.broadcast_transaction()
+    
+##
     net = Network()
-    zhangsan,lisi = net.peers[0],net.peers[6]
-    zhangsan.create_transaction(lisi.wallet.addrs[0],1000)
-    zhangsan.broadcast_transaction()
     net.make_random_transactions()
     net.consensus()
-    b = zhangsan.get_utxo()[0]
-    print(b.pubkey_script)
+##    b = zhangsan.get_utxo()[0]
+##    print(b.pubkey_script)
 ##    tx = zhangsan.current_tx
 ##    vin = tx.tx_in[0]
 ##    vin1 = Vin(vin.to_spend,b'1'*64,vin.pubkey)
