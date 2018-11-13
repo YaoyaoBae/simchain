@@ -54,9 +54,8 @@ Code example
    >>> from simchain import Network
    >>> net = Network()
 ```
-------
-The code above created a blockchain network. The default peers number is 12 and every peer obtain equal money 100000 fen (yuan,jiao,fen) at the very begining.We can check the peers number and balance as follows.
 -------
+The code above created a blockchain network. The default peers number is 12 and every peer obtain equal money 100000 fen (yuan,jiao,fen) at the very begining.We can check the peers number and balance as follows.
 ```python
    >>> net.nop
    12
