@@ -33,7 +33,7 @@ Algorithm
 ========
 * Hash function: double sha256 algorithm
 * DSA: ECDSA
-* Lattice-based cryptography is discussed.
+* Lattice-based cryptography is discussed
 
 Data type defination
 ========
@@ -47,14 +47,15 @@ Simchain only support the function of bitcoin system by far, so the user-defined
 * MerkleTree ----- MerkleTree object
 
 
-#Code example
+Code example
 
-##Create a vitual blockchain network 
-### At the very begining, there is only one user joined in the system, just like satoshi and his bitcoin system.
+
 -------
 ```python
    >>> from simchain import network
-   >>> net = Network(nop = 1,von = 10000)
+   >>> net = Network()
+   >>> net.make_randon_transactions()
+   >>> net.consensus()
 ```
 
 ------
