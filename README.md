@@ -11,7 +11,7 @@ Current:1.0.0
 
 Requirements:
 =======
-Python 2 and 3
+Python 3
 
 Installation
 =======
