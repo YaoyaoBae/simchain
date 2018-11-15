@@ -9,7 +9,7 @@ Version
 =======
 Current:1.0.0
 
-Requirements:
+Requirements
 =======
 Python 3
 
